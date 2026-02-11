@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: mangala-postgres
+    environment:
+      POSTGRES_DB: mangala_dev
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev123
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init-db:/docker-entrypoint-initdb.d
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - mangala-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U dev" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
+networks:
+  mangala-network:
+    driver: bridge

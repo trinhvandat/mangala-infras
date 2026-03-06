@@ -1,9 +1,22 @@
 version: '3.8'
 
+# =============================================================================
+# Mangala All-in-One Local Development Stack
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.yml up -d
+#   docker compose -f docker-compose.yml down
+#   docker compose -f docker-compose.yml logs -f
+# =============================================================================
+
 services:
+  # ===========================================================================
+  # PostgreSQL - Primary relational database
+  # ===========================================================================
   postgres:
-    image: postgres:15
+    image: postgres:15-alpine
     container_name: mangala-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: mangala_dev
       POSTGRES_USER: dev
@@ -11,19 +24,215 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./init-db:/docker-entrypoint-initdb.d
+      - ./init-db:/docker-entrypoint-initdb.d:ro
       - postgres_data:/var/lib/postgresql/data
     networks:
       - mangala-network
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U dev" ]
+      test: ["CMD-SHELL", "pg_isready -U dev -d mangala_dev"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # ===========================================================================
+  # MongoDB - Document database for wallet/transaction data
+  # ===========================================================================
+  mongodb:
+    image: mongo:7.0
+    container_name: mangala-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: wallet_db
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./init-mongo:/docker-entrypoint-initdb.d:ro
+      - ./mongodb.key:/data/configdb/mongodb.key
+    command: >
+      mongod --replSet rs0 --bind_ip_all
+      --keyFile /data/configdb/mongodb.key
+    networks:
+      - mangala-network
+    healthcheck:
+      test: mongosh --username admin --password password123 --eval 'db.runCommand("ping").ok' localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB Replica Set Initialization (required for Change Streams)
+  mongo-init-replica:
+    image: mongo:7.0
+    container_name: mangala-mongo-init
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    command: >
+      mongosh --host mongodb:27017 --eval '
+        rs.initiate({
+          _id: "rs0",
+          members: [{ _id: 0, host: "mongodb:27017" }]
+        })
+      '
+    networks:
+      - mangala-network
+    restart: "no"
+
+  # ===========================================================================
+  # Redis - Caching, rate limiting, session store
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: mangala-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # Kafka (KRaft mode - no Zookeeper required)
+  # ===========================================================================
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: mangala-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - mangala-network
+    healthcheck:
+      test: /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # Kafka UI - Web interface for Kafka management
+  # ===========================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: mangala-kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: mangala-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - mangala-network
+
+  # ===========================================================================
+  # Mongo Express - Web interface for MongoDB
+  # ===========================================================================
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mangala-mongo-ui
+    restart: unless-stopped
+    ports:
+      - "8083:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: password123
+      ME_CONFIG_MONGODB_URL: mongodb://admin:password123@mongodb:27017/?replicaSet=rs0
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      mongo-init-replica:
+        condition: service_completed_successfully
+    networks:
+      - mangala-network
+
+  # ===========================================================================
+  # Redis Commander - Web interface for Redis
+  # ===========================================================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: mangala-redis-ui
+    restart: unless-stopped
+    ports:
+      - "8084:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - mangala-network
+
+  # ===========================================================================
+  # pgAdmin - Web interface for PostgreSQL
+  # ===========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: mangala-pgadmin
+    restart: unless-stopped
+    ports:
+      - "8085:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@google.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mangala-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
 volumes:
   postgres_data:
+    name: mangala_postgres_data
+  mongo_data:
+    name: mangala_mongo_data
+  redis_data:
+    name: mangala_redis_data
+  kafka_data:
+    name: mangala_kafka_data
+  pgadmin_data:
+    name: mangala_pgadmin_data
 
+# =============================================================================
+# Networks
+# =============================================================================
 networks:
   mangala-network:
+    name: mangala-network
     driver: bridge

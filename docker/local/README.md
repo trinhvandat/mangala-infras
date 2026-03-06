@@ -160,3 +160,10 @@ KAFKA_BOOTSTRAP_SERVERS=localhost:9094  # or mangala-kafka:9092 in Docker
 # MongoDB
 MONGO_URI=mongodb://admin:password123@localhost:27017/wallet_db?replicaSet=rs0
 ```
+
+## Resolve mongodb failed to start
+Run this command to generate mongodb.key in the folder docker/local
+``
+openssl rand -base64 756 > mongodb.key
+chmod 400 mongodb.key
+``

@@ -200,7 +200,7 @@ services:
     ports:
       - "8085:80"
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@mangala.local
+      PGADMIN_DEFAULT_EMAIL: admin@google.com
       PGADMIN_DEFAULT_PASSWORD: admin
       PGADMIN_CONFIG_SERVER_MODE: "False"
     volumes:

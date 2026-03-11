@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: 'Mangala Dashboards'
+    orgId: 1
+    folder: 'Mangala'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,5 +1,3 @@
-version: '3.8'
-
 # =============================================================================
 # Mangala All-in-One Local Development Stack
 # =============================================================================
@@ -42,25 +40,21 @@ services:
     container_name: mangala-mongodb
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: password123
       MONGO_INITDB_DATABASE: wallet_db
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
       - ./init-mongo:/docker-entrypoint-initdb.d:ro
-      - ./mongodb.key:/data/configdb/mongodb.key
-    command: >
-      mongod --replSet rs0 --bind_ip_all
-      --keyFile /data/configdb/mongodb.key
+    command: mongod --replSet rs0 --bind_ip_all
     networks:
       - mangala-network
     healthcheck:
-      test: mongosh --username admin --password password123 --eval 'db.runCommand("ping").ok' localhost:27017/test --quiet
+      test: mongosh --eval 'db.runCommand("ping").ok' localhost:27017/test --quiet
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   # MongoDB Replica Set Initialization (required for Change Streams)
   mongo-init-replica:
@@ -71,10 +65,16 @@ services:
         condition: service_healthy
     command: >
       mongosh --host mongodb:27017 --eval '
-        rs.initiate({
-          _id: "rs0",
-          members: [{ _id: 0, host: "mongodb:27017" }]
-        })
+        try {
+          rs.status();
+          print("Replica set already initialized");
+        } catch (e) {
+          rs.initiate({
+            _id: "rs0",
+            members: [{ _id: 0, host: "mongodb:27017" }]
+          });
+          print("Replica set initialized");
+        }
       '
     networks:
       - mangala-network
@@ -165,9 +165,7 @@ services:
     ports:
       - "8083:8081"
     environment:
-      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
-      ME_CONFIG_MONGODB_ADMINPASSWORD: password123
-      ME_CONFIG_MONGODB_URL: mongodb://admin:password123@mongodb:27017/?replicaSet=rs0
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/?replicaSet=rs0
       ME_CONFIG_BASICAUTH_USERNAME: admin
       ME_CONFIG_BASICAUTH_PASSWORD: admin
     depends_on:
@@ -214,6 +212,138 @@ services:
     networks:
       - mangala-network
 
+  # ===========================================================================
+  # Prometheus - Metrics collection and alerting
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mangala-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../../monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - mangala-network
+
+  # ===========================================================================
+  # Alertmanager - Alert routing and notification
+  # ===========================================================================
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: mangala-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ../../monitoring/alertmanager:/etc/alertmanager:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - mangala-network
+
+  # ===========================================================================
+  # Grafana - Metrics visualization and dashboards
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mangala-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - mangala-network
+
+  # ===========================================================================
+  # Elasticsearch - Full-text search for transactions
+  # ===========================================================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: mangala-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ===========================================================================
+  # StarRocks Frontend - OLAP analytics engine
+  # Note: Use 'docker-compose --profile analytics up' to enable StarRocks
+  # ===========================================================================
+  starrocks-fe:
+    image: starrocks/fe-ubuntu:3.2-latest
+    container_name: mangala-starrocks-fe
+    profiles:
+      - analytics
+    restart: unless-stopped
+    ports:
+      - "9030:9030"  # MySQL protocol
+      - "8030:8030"  # HTTP
+    volumes:
+      - starrocks_fe_data:/opt/starrocks/fe/meta
+    environment:
+      - FE_MEMORY_LIMIT=1g
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  # ===========================================================================
+  # StarRocks Backend - OLAP analytics engine
+  # ===========================================================================
+  starrocks-be:
+    image: starrocks/be-ubuntu:3.2-latest
+    container_name: mangala-starrocks-be
+    profiles:
+      - analytics
+    restart: unless-stopped
+    ports:
+      - "8040:8040"
+    volumes:
+      - starrocks_be_data:/opt/starrocks/be/storage
+    environment:
+      - BE_MEMORY_LIMIT=2g
+    depends_on:
+      starrocks-fe:
+        condition: service_healthy
+    networks:
+      - mangala-network
+
 # =============================================================================
 # Volumes
 # =============================================================================
@@ -228,6 +358,16 @@ volumes:
     name: mangala_kafka_data
   pgadmin_data:
     name: mangala_pgadmin_data
+  prometheus_data:
+    name: mangala_prometheus_data
+  grafana_data:
+    name: mangala_grafana_data
+  elasticsearch_data:
+    name: mangala_elasticsearch_data
+  starrocks_fe_data:
+    name: mangala_starrocks_fe_data
+  starrocks_be_data:
+    name: mangala_starrocks_be_data
 
 # =============================================================================
 # Networks

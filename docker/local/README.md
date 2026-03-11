@@ -2,10 +2,50 @@
 
 This directory contains Docker Compose configurations for running the complete Mangala backend infrastructure locally.
 
-## Quick Start
+## Quick Start (One Command!)
 
 ```bash
-# Start all infrastructure services
+# Start EVERYTHING (infrastructure + all microservices)
+make dev-full
+
+# Or use the script
+./start-all.sh all
+```
+
+## Development Workflow
+
+```bash
+# Option 1: Full Docker (recommended for testing)
+make dev-full           # Start everything in Docker
+
+# Option 2: Hybrid (recommended for development)
+make dev                # Start infrastructure + web frontend
+                        # Then run Java services from IDE
+
+# Option 3: Use the script
+./start-all.sh all      # Full Docker stack
+./start-all.sh infra    # Infrastructure only
+./start-all.sh local    # Infrastructure + services locally (mvn spring-boot:run)
+```
+
+## Makefile Commands
+
+```bash
+make help               # Show all commands
+make up                 # Start infrastructure only
+make up-all             # Start infrastructure + all services
+make down               # Stop everything
+make clean              # Stop + remove all data
+make logs               # View all logs
+make health             # Check health of all services
+make test               # Run all tests
+make build              # Build all Java services
+```
+
+## Legacy Start Script
+
+```bash
+# Start infrastructure only
 ./start.sh all
 
 # Or start only databases (no UI tools)

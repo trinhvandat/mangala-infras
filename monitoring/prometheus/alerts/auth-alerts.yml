@@ -1,0 +1,20 @@
+groups:
+  - name: auth
+    rules:
+      - alert: AuthFailureSpike
+        expr: sum(rate(auth_failures_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Spike in authentication failures
+          description: Auth failure rate is {{ $value | humanize }} per second over the last 5 minutes
+
+      - alert: PolicyReloadFailure
+        expr: increase(policy_reload_failures_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Authorization policy reload failed
+          description: Policy reload has failed {{ $value }} time(s) in the last 10 minutes

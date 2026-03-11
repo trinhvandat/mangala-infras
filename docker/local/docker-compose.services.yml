@@ -1,0 +1,301 @@
+# =============================================================================
+# Mangala Microservices - Docker Compose
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.services.yml up -d
+#
+# Or use the Makefile:
+#   make up-all
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Authentication Service (8080)
+  # ===========================================================================
+  auth-service:
+    build:
+      context: ../../../mangala-authentication
+      dockerfile: Dockerfile
+    container_name: mangala-auth
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # PostgreSQL
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: mangala_dev
+      DB_SCHEMA: auth
+      DB_USERNAME: dev
+      DB_PASSWORD: dev123
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:-mangala-dev-secret-key-minimum-32-bytes!!}
+      JWT_ISSUER: mangala
+      JWT_ACCESS_EXPIRATION_SECONDS: 900
+      JWT_REFRESH_EXPIRATION_SECONDS: 604800
+      # Passkey
+      RP_ID: ${RP_ID:-localhost}
+      RP_NAME: ${RP_NAME:-Mangala Wallet}
+      RP_ORIGIN: ${RP_ORIGIN:-http://localhost:3000}
+      PASSKEY_TIMEOUT: ${PASSKEY_TIMEOUT:-60000}
+      PASSKEY_ALGORITHMS: ${PASSKEY_ALGORITHMS:-ES256,RS256}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # ===========================================================================
+  # Gateway Service (8000)
+  # ===========================================================================
+  gateway:
+    build:
+      context: ../../../mangala-gateway
+      dockerfile: Dockerfile
+    container_name: mangala-gateway
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:-mangala-dev-secret-key-minimum-32-bytes!!}
+      JWT_ISSUER: mangala
+      # Downstream Services
+      AUTH_SERVICE_URL: http://auth-service:8080
+      WALLET_SERVICE_URL: http://wallet-service:8081
+      PORTFOLIO_SERVICE_URL: http://portfolio-service:8182
+      PRICE_FEED_SERVICE_URL: http://price-service:8084
+      NOTIFICATION_SERVICE_URL: http://notification-service:8086
+      # CORS
+      CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
+      # Rate Limiting
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_REPLENISH: 10
+      RATE_LIMIT_BURST: 20
+      # Policy
+      POLICY_NO_MATCH_BEHAVIOR: DENY
+      POLICY_FAIL_ON_LOAD_ERROR: "true"
+      POLICY_HEALTH_CHECK: "true"
+      # Kafka (optional)
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      AUDIT_ENABLED: "false"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # ===========================================================================
+  # Wallet Service (8081)
+  # ===========================================================================
+  wallet-service:
+    build:
+      context: ../../../mangala-wallet-service
+      dockerfile: Dockerfile
+    container_name: mangala-wallet
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8080
+      # MongoDB (no auth for local dev)
+      MONGO_URI: mongodb://mongodb:27017/wallet_db?replicaSet=rs0
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      mongo-init-replica:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # ===========================================================================
+  # Portfolio Service (8182)
+  # ===========================================================================
+  portfolio-service:
+    build:
+      context: ../../../mangala-portfolio-service
+      dockerfile: Dockerfile
+    container_name: mangala-portfolio
+    restart: unless-stopped
+    ports:
+      - "8182:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8080
+      # MongoDB (no auth for local dev)
+      MONGO_URI: mongodb://mongodb:27017/portfolio_db?replicaSet=rs0
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # StarRocks OLAP Analytics (optional - enable with --profile analytics)
+      STARROCKS_HOST: ${STARROCKS_HOST:-starrocks-fe}
+      STARROCKS_PORT: ${STARROCKS_PORT:-9030}
+      STARROCKS_USERNAME: ${STARROCKS_USERNAME:-root}
+      STARROCKS_PASSWORD: ${STARROCKS_PASSWORD:-}
+      STARROCKS_ENABLED: ${STARROCKS_ENABLED:-false}
+    depends_on:
+      mongo-init-replica:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # ===========================================================================
+  # Price Service (8084)
+  # ===========================================================================
+  price-service:
+    build:
+      context: ../../../mangala-price-service
+      dockerfile: Dockerfile
+    container_name: mangala-price
+    restart: unless-stopped
+    ports:
+      - "8084:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8080
+      # Redis for caching
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # ===========================================================================
+  # Notification Service (8086)
+  # ===========================================================================
+  notification-service:
+    build:
+      context: ../../../mangala-notification-service
+      dockerfile: Dockerfile
+    container_name: mangala-notification
+    restart: unless-stopped
+    ports:
+      - "8086:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8080
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # ===========================================================================
+  # Transaction History Service (8087)
+  # ===========================================================================
+  transaction-history-service:
+    build:
+      context: ../../../mangala-transaction-history-service
+      dockerfile: Dockerfile
+    container_name: mangala-txhistory
+    restart: unless-stopped
+    ports:
+      - "8087:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8080
+      # PostgreSQL (read-only access to crawler schema)
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: mangala_dev
+      DB_SCHEMA: crawler
+      DB_USERNAME: dev
+      DB_PASSWORD: dev123
+      # Redis
+      REDIS_URL: redis://redis:6379
+      # Elasticsearch
+      ELASTICSEARCH_URIS: http://elasticsearch:9200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - mangala-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # ===========================================================================
+  # Web Frontend (3000)
+  # ===========================================================================
+  web:
+    build:
+      context: ../../../mangala-web
+      dockerfile: Dockerfile
+    container_name: mangala-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - mangala-network

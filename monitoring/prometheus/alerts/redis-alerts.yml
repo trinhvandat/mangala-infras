@@ -1,0 +1,11 @@
+groups:
+  - name: redis
+    rules:
+      - alert: RedisConnectionFailure
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Redis instance is down
+          description: Redis instance {{ $labels.instance }} has been unreachable for more than 1 minute

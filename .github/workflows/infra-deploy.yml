@@ -95,12 +95,11 @@ jobs:
 
       - name: Parse command
         id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          COMMENT=$(cat <<'COMMENT_EOF'
-          ${{ github.event.comment.body }}
-          COMMENT_EOF
-          )
-          COMMAND=$(echo "$COMMENT" | head -1 | sed 's|^/deploy\s*||' | xargs)
+          COMMAND=$(echo "$COMMENT_BODY" | head -1 | sed 's|^/deploy[[:space:]]*||' | tr -d '[:space:]')
+          echo "Parsed command: [$COMMAND]"
 
           case "$COMMAND" in
             infra|restart|down|status|clean)

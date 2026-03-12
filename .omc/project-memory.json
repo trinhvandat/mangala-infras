@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1773042655296,
-  "projectRoot": "/Users/dat.trinhvan/Workspaces/Projects/mangala/mangala-infras",
+  "lastScanned": 1773317414764,
+  "projectRoot": "/Users/leonard/Workspace/Mangala/Projects/mangala-wallet-backend/mangala-infras",
   "techStack": {
     "languages": [],
     "frameworks": [],
@@ -38,14 +38,14 @@
       "path": "docker",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1773042655262,
+      "lastAccessed": 1773317414758,
       "keyFiles": []
     },
     "docs": {
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 2,
-      "lastAccessed": 1773042655262,
+      "lastAccessed": 1773317414758,
       "keyFiles": [
         "environment-promotion-checklist.md",
         "secrets-inventory.md"
@@ -55,7 +55,7 @@
       "path": "monitoring",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1773042655263,
+      "lastAccessed": 1773317414758,
       "keyFiles": [
         "README.md"
       ]
@@ -63,9 +63,45 @@
   },
   "hotPaths": [
     {
+      "path": "",
+      "accessCount": 4,
+      "lastAccessed": 1773317495851,
+      "type": "directory"
+    },
+    {
       "path": "docker/local/docker-compose.yml",
       "accessCount": 1,
-      "lastAccessed": 1773042684341,
+      "lastAccessed": 1773317500580,
+      "type": "file"
+    },
+    {
+      "path": "docker/local/docker-compose.services.yml",
+      "accessCount": 1,
+      "lastAccessed": 1773317501017,
+      "type": "file"
+    },
+    {
+      "path": "docker/local/Makefile",
+      "accessCount": 1,
+      "lastAccessed": 1773317501560,
+      "type": "file"
+    },
+    {
+      "path": "docker/local/.env",
+      "accessCount": 1,
+      "lastAccessed": 1773317502006,
+      "type": "file"
+    },
+    {
+      "path": "docker/local/start.sh",
+      "accessCount": 1,
+      "lastAccessed": 1773317502521,
+      "type": "file"
+    },
+    {
+      "path": "docker/local/stop.sh",
+      "accessCount": 1,
+      "lastAccessed": 1773317503489,
       "type": "file"
     }
   ],

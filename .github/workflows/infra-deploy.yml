@@ -1,0 +1,312 @@
+# =============================================================================
+# Mangala Infrastructure Deployment via PR Comment
+# =============================================================================
+# Trigger: Comment on PR targeting 'develop' branch
+#
+# Commands:
+#   /deploy infra          - Start/update all infrastructure
+#   /deploy restart        - Restart all infrastructure
+#   /deploy down           - Stop all infrastructure (keep data)
+#   /deploy status         - Health check all services
+#   /deploy clean          - Stop and remove all data (DANGEROUS)
+#
+# Required GitHub Secrets:
+#   VPS_HOST       - VPS IP or hostname
+#   VPS_USER       - SSH username
+#   VPS_SSH_KEY    - SSH private key
+#   VPS_SSH_PORT   - SSH port (optional, default 22)
+#   VPS_DEPLOY_DIR - Path to infras repo on VPS (optional, default /opt/mangala-infras)
+# =============================================================================
+
+name: Infrastructure Deploy
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate: only run on PR comments with /deploy, targeting develop
+  # ---------------------------------------------------------------------------
+  gate:
+    if: >
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/deploy')
+    runs-on: ubuntu-latest
+    outputs:
+      command: ${{ steps.parse.outputs.command }}
+      is_allowed: ${{ steps.auth.outputs.is_allowed }}
+      pr_branch: ${{ steps.pr.outputs.branch }}
+      pr_base: ${{ steps.pr.outputs.base }}
+    steps:
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('base', pr.data.base.ref);
+            core.setOutput('branch', pr.data.head.ref);
+
+      - name: Check target branch is develop
+        if: steps.pr.outputs.base != 'develop'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '**Deploy skipped** - Only PRs targeting `develop` can trigger deployments.'
+            });
+            core.setFailed('PR does not target develop branch');
+
+      - name: Check permissions
+        id: auth
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const permission = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            const level = permission.data.permission;
+            const allowed = ['admin', 'maintain', 'write'].includes(level);
+            core.setOutput('is_allowed', allowed);
+            if (!allowed) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `**Deploy denied** - @${context.actor} does not have write permission.`
+              });
+              core.setFailed('Insufficient permissions');
+            }
+
+      - name: Parse command
+        id: parse
+        run: |
+          COMMENT=$(cat <<'COMMENT_EOF'
+          ${{ github.event.comment.body }}
+          COMMENT_EOF
+          )
+          COMMAND=$(echo "$COMMENT" | head -1 | sed 's|^/deploy\s*||' | xargs)
+
+          case "$COMMAND" in
+            infra|restart|down|status|clean)
+              echo "command=$COMMAND" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "command=unknown" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Reject unknown command
+        if: steps.parse.outputs.command == 'unknown'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '**Unknown command.** Available commands:',
+                '| Command | Description |',
+                '|---------|-------------|',
+                '| `/deploy infra` | Start/update infrastructure |',
+                '| `/deploy restart` | Restart infrastructure |',
+                '| `/deploy down` | Stop infrastructure (keep data) |',
+                '| `/deploy status` | Health check |',
+                '| `/deploy clean` | Stop + remove data |',
+              ].join('\n')
+            });
+            core.setFailed('Unknown deploy command');
+
+  # ---------------------------------------------------------------------------
+  # Deploy: SSH into VPS and execute
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: gate
+    if: >
+      needs.gate.outputs.is_allowed == 'true' &&
+      needs.gate.outputs.command != 'unknown'
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_DIR: ${{ secrets.VPS_DEPLOY_DIR || '/opt/mangala-infras' }}
+    steps:
+      - name: React to comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+
+      - name: Deploy to VPS
+        id: ssh
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_SSH_PORT || 22 }}
+          command_timeout: 10m
+          script: |
+            set -e
+            DEPLOY_DIR="${{ secrets.VPS_DEPLOY_DIR }}"
+            DEPLOY_DIR="${DEPLOY_DIR:-/opt/mangala-infras}"
+            COMPOSE_DIR="$DEPLOY_DIR/docker/local"
+            BRANCH="${{ needs.gate.outputs.pr_branch }}"
+            COMMAND="${{ needs.gate.outputs.command }}"
+
+            echo "=== Mangala Infra Deploy ==="
+            echo "Command: $COMMAND"
+            echo "Branch:  $BRANCH"
+            echo "Dir:     $COMPOSE_DIR"
+            echo ""
+
+            # Ensure repo exists on VPS
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              echo "Cloning repository..."
+              git clone git@github.com:trinhvandat/mangala-infras.git "$DEPLOY_DIR"
+            fi
+
+            cd "$DEPLOY_DIR"
+
+            # Fetch and checkout the PR branch
+            git fetch origin
+            git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
+            git pull origin "$BRANCH"
+
+            cd "$COMPOSE_DIR"
+
+            # Execute command
+            case "$COMMAND" in
+              infra)
+                echo ">>> Starting infrastructure..."
+                docker compose -f docker-compose.yml up -d
+                echo ""
+                echo ">>> Waiting for services to be healthy..."
+                sleep 15
+                ;;
+              restart)
+                echo ">>> Restarting infrastructure..."
+                docker compose -f docker-compose.yml down
+                docker compose -f docker-compose.yml up -d
+                echo ""
+                echo ">>> Waiting for services to be healthy..."
+                sleep 15
+                ;;
+              down)
+                echo ">>> Stopping infrastructure..."
+                docker compose -f docker-compose.yml down
+                echo "Infrastructure stopped."
+                ;;
+              status)
+                echo ">>> Checking status..."
+                ;;
+              clean)
+                echo ">>> Cleaning infrastructure (removing data)..."
+                docker compose -f docker-compose.yml down -v --remove-orphans
+                echo "Infrastructure cleaned."
+                ;;
+            esac
+
+            # Health check (skip for 'down' and 'clean')
+            if [ "$COMMAND" != "down" ] && [ "$COMMAND" != "clean" ]; then
+              echo ""
+              echo "=== Health Check ==="
+
+              check_service() {
+                local name="$1"
+                local cmd="$2"
+                if eval "$cmd" > /dev/null 2>&1; then
+                  echo "[OK] $name"
+                else
+                  echo "[DOWN] $name"
+                fi
+              }
+
+              check_service "PostgreSQL" "docker exec mangala-postgres pg_isready -U dev -d mangala_dev"
+              check_service "Redis" "docker exec mangala-redis redis-cli ping"
+              check_service "MongoDB" "docker exec mangala-mongodb mongosh --eval 'db.runCommand(\"ping\")' --quiet"
+              check_service "Kafka" "docker exec mangala-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"
+              check_service "Elasticsearch" "curl -sf http://localhost:9200/_cluster/health"
+              check_service "Prometheus" "curl -sf http://localhost:9090/-/healthy"
+              check_service "Grafana" "curl -sf http://localhost:3001/api/health"
+
+              echo ""
+              echo "=== Container Status ==="
+              docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mangala || echo "No mangala containers"
+            fi
+
+            echo ""
+            echo "=== Done ==="
+
+      - name: Report success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const command = '${{ needs.gate.outputs.command }}';
+            const branch = '${{ needs.gate.outputs.pr_branch }}';
+
+            const icons = {
+              infra: '🟢', restart: '🔄', down: '🔴', status: '📊', clean: '🧹'
+            };
+            const descriptions = {
+              infra: 'Infrastructure started/updated',
+              restart: 'Infrastructure restarted',
+              down: 'Infrastructure stopped',
+              status: 'Health check completed',
+              clean: 'Infrastructure cleaned (data removed)'
+            };
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                `${icons[command]} **Deploy \`${command}\` succeeded**`,
+                '',
+                `| | |`,
+                `|---|---|`,
+                `| **Command** | \`/deploy ${command}\` |`,
+                `| **Branch** | \`${branch}\` |`,
+                `| **Result** | ${descriptions[command]} |`,
+                `| **Triggered by** | @${context.actor} |`,
+              ].join('\n')
+            });
+
+      - name: Report failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const command = '${{ needs.gate.outputs.command }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                `**Deploy \`${command}\` failed**`,
+                '',
+                `Check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`,
+                '',
+                `Triggered by @${context.actor}`
+              ].join('\n')
+            });

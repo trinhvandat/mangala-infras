@@ -95,20 +95,24 @@ jobs:
 
       - name: Parse command
         id: parse
-        env:
-          COMMENT_BODY: ${{ github.event.comment.body }}
-        run: |
-          COMMAND=$(echo "$COMMENT_BODY" | head -1 | sed 's|^/deploy[[:space:]]*||' | tr -d '[:space:]')
-          echo "Parsed command: [$COMMAND]"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.comment.body.trim();
+            const firstLine = body.split('\n')[0].trim();
+            console.log(`Comment body: [${body}]`);
+            console.log(`First line: [${firstLine}]`);
 
-          case "$COMMAND" in
-            infra|restart|down|status|clean)
-              echo "command=$COMMAND" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "command=unknown" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+            const match = firstLine.match(/^\/deploy\s+(\S+)/);
+            const command = match ? match[1].toLowerCase() : '';
+            console.log(`Parsed command: [${command}]`);
+
+            const allowed = ['infra', 'restart', 'down', 'status', 'clean'];
+            if (allowed.includes(command)) {
+              core.setOutput('command', command);
+            } else {
+              core.setOutput('command', 'unknown');
+            }
 
       - name: Reject unknown command
         if: steps.parse.outputs.command == 'unknown'
